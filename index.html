@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Кубики</title>
+<style>
+  :root { --n: 8; --gap: 6px; --cell: min(64px, calc((min(94vw, 640px) - (var(--n) + 1) * var(--gap)) / var(--n))); }
+  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+         justify-content: center; gap: 16px; background: #1e1f2b; color: #eee; font-family: system-ui, sans-serif;
+         touch-action: none; user-select: none; }
+  .bar { display: flex; gap: 24px; align-items: center; font-size: 18px; }
+  .bar b { font-size: 24px; }
+  label { font-size: 15px; }
+  input { width: 56px; font: inherit; padding: 3px; border-radius: 4px; border: 0; }
+  .bar { flex-wrap: wrap; justify-content: center; padding: 0 12px; gap: 12px 20px; }
+  button { font: inherit; padding: 6px 14px; border: 0; border-radius: 6px; background: #4a4d6a; color: #fff; cursor: pointer; }
+  button:hover { background: #5d6188; }
+  #board { position: relative; padding: var(--gap); background: #2c2e42; border-radius: 10px;
+           width: calc(var(--n) * var(--cell) + (var(--n) + 1) * var(--gap)); height: calc(var(--n) * var(--cell) + (var(--n) + 1) * var(--gap)); box-sizing: border-box; }
+  .slot { position: absolute; width: var(--cell); height: var(--cell); background: #363954; border-radius: 6px; }
+  .cube { position: absolute; width: var(--cell); height: var(--cell); border-radius: 8px; box-sizing: border-box;
+          transition: left .12s, top .12s, transform .2s, opacity .2s;
+          box-shadow: inset 0 -5px 0 rgba(0,0,0,.25), inset 0 3px 0 rgba(255,255,255,.3); }
+  .cube.burn { transform: scale(0); opacity: 0; }
+  .cube.new { transform: scale(0); }
+  #over { position: absolute; inset: 0; z-index: 5; display: none; flex-direction: column; align-items: center; justify-content: center;
+          gap: 12px; background: rgba(20,20,30,.85); border-radius: 10px; font-size: 28px; }
+  #setup { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+           background: rgba(20,20,30,.92); z-index: 10; }
+  .panel { display: flex; flex-direction: column; gap: 14px; background: #2c2e42; padding: 24px 28px; border-radius: 12px; }
+  .panel h2 { margin: 0 0 4px; font-size: 22px; }
+  .panel label { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+  #over .title { font-size: 32px; font-weight: 700; }
+  #over { font-size: 18px; text-align: center; }
+  #over .row { display: flex; gap: 10px; margin-top: 6px; }
+  .hint { opacity: .6; font-size: 14px; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <div>Очки: <b id="score">0</b></div>
+    <div title="Ходов подряд без сжигания / лимит">Без сжигания: <b id="idle">0</b></div>
+    <div>Рекорд: <b id="best">0</b></div>
+    <button id="restart">Новая игра</button>
+  </div>
+  <div id="setup">
+    <div class="panel">
+      <h2>Настройки игры</h2>
+      <label>Цветов (3–8) <input id="colors" type="number" min="3" max="8"></label>
+      <label>Клеток по стороне (4–12) <input id="size" type="number" min="4" max="12"></label>
+      <label>Новых кубиков за ход (0–8) <input id="spawn" type="number" min="0" max="8"></label>
+      <label>Лимит ходов без сжигания (5–200) <input id="idleLimit" type="number" min="5" max="200"></label>
+      <button id="play">Играть</button>
+    </div>
+  </div>
+  <div id="board"><div id="over">
+    <div class="title">Игра окончена</div>
+    <div id="overMsg">Ходов больше нет</div>
+    <div>Ваш счёт: <b id="finalScore">0</b></div>
+    <div id="newBest" style="display:none;color:#f1c40f">Новый рекорд!</div>
+    <div class="row"><button id="again">Играть снова</button><button id="toSetup">Настройки</button></div>
+  </div></div>
+  <div class="hint">Стрелки (или свайп) двигают кубики. 3+ соседних кубика одного цвета сгорают, чем больше группа — тем больше очков.</div>
+
+<script>
+let N = 8;   // размер поля N×N
+const PALETTE = ['#e74c3c', '#3498db', '#2ecc71', '#f1c40f', '#9b59b6', '#e67e22', '#1abc9c', '#ecf0f1'];
+const load = (k, def) => { try { const v = localStorage.getItem(k); return v === null ? def : +v; } catch (e) { return def; } };
+let colorCount = load('cubes-colors', 5);   // сколько цветов в игре
+let idleLimit = load('cubes-idle', 30);     // сколько ходов подряд без сжигания допускается
+let spawnCount = load('cubes-spawn', 2);    // сколько новых кубиков появляется после хода
+N = load('cubes-size', 8);
+const startFill = () => Math.round(N * N * 0.44);   // сколько кубиков в начале (28 при 8×8)
+
+const boardEl = document.getElementById('board');
+const scoreEl = document.getElementById('score');
+const bestEl = document.getElementById('best');
+const overEl = document.getElementById('over');
+const idleEl = document.getElementById('idle');
+
+let idle = 0;   // ходов подряд без сжигания
+let grid, score, busy, best = +(localStorage.getItem('cubes-best') || 0), startBest = best;
+
+// позиция в пикселях считаем из реального размера слота
+function pos(r, c) {
+  const slot = boardEl.querySelector('.slot');
+  const size = slot.offsetWidth, gap = (boardEl.clientWidth - N * size) / (N + 1);
+  return { left: gap + c * (size + gap), top: gap + r * (size + gap) };
+}
+
+function makeSlots() {
+  document.documentElement.style.setProperty('--n', N);
+  boardEl.querySelectorAll('.slot').forEach(e => e.remove());
+  for (let i = 0; i < N * N; i++) {
+    const s = document.createElement('div'); s.className = 'slot'; boardEl.appendChild(s);
+  }
+  const first = boardEl.querySelector('.slot'), size = first.offsetWidth;
+  const gap = (boardEl.clientWidth - N * size) / (N + 1);
+  boardEl.querySelectorAll('.slot').forEach((s, i) => {
+    s.style.left = gap + (i % N) * (size + gap) + 'px';
+    s.style.top = gap + Math.floor(i / N) * (size + gap) + 'px';
+  });
+}
+
+function place(cube, r, c) {
+  const p = pos(r, c); cube.style.left = p.left + 'px'; cube.style.top = p.top + 'px';
+}
+
+function addCube(r, c, color, animate) {
+  const el = document.createElement('div');
+  el.className = 'cube' + (animate ? ' new' : '');
+  el.style.background = PALETTE[color];
+  place(el, r, c);
+  boardEl.appendChild(el);
+  if (animate) requestAnimationFrame(() => requestAnimationFrame(() => el.classList.remove('new')));
+  grid[r][c] = { color, el };
+}
+
+function findMatches() {
+  // группы соседних (по 4 сторонам) кубиков одного цвета; горят группы из 3+
+  const dead = new Set(), seen = new Set();
+  dead.groups = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const start = grid[r][c];
+    if (!start || seen.has(start)) continue;
+    const group = [start], stack = [[r, c]];
+    seen.add(start);
+    while (stack.length) {
+      const [y, x] = stack.pop();
+      for (const [dy, dx] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const ny = y + dy, nx = x + dx;
+        const n = ny >= 0 && ny < N && nx >= 0 && nx < N ? grid[ny][nx] : null;
+        if (n && !seen.has(n) && n.color === start.color) { seen.add(n); group.push(n); stack.push([ny, nx]); }
+      }
+    }
+    if (group.length >= 3) { group.forEach(g => dead.add(g)); dead.groups.push(group.length); }
+  }
+  return dead;
+}
+
+function emptyCells() {
+  const out = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (!grid[r][c]) out.push([r, c]);
+  return out;
+}
+
+function randomColorFor(r, c) {
+  // выбираем цвет, который не образует тройку сразу при появлении
+  const opts = PALETTE.slice(0, colorCount).map((_, i) => i).sort(() => Math.random() - .5);
+  for (const col of opts) {
+    grid[r][c] = { color: col };
+    const bad = findMatches().size > 0;
+    grid[r][c] = null;
+    if (!bad) return col;
+  }
+  return opts[0];
+}
+
+function spawn(count, animate) {
+  const free = emptyCells().sort(() => Math.random() - .5).slice(0, count);
+  for (const [r, c] of free) addCube(r, c, randomColorFor(r, c), animate);
+}
+
+function slide(dr, dc) {
+  let moved = false;
+  const rs = [...Array(N).keys()], cs_ = [...Array(N).keys()];
+  if (dr > 0) rs.reverse();
+  if (dc > 0) cs_.reverse();
+  for (const r of rs) for (const c of cs_) {
+    const cube = grid[r][c]; if (!cube) continue;
+    let nr = r, nc = c;
+    while (nr + dr >= 0 && nr + dr < N && nc + dc >= 0 && nc + dc < N && !grid[nr + dr][nc + dc]) { nr += dr; nc += dc; }
+    if (nr !== r || nc !== c) {
+      grid[r][c] = null; grid[nr][nc] = cube; place(cube.el, nr, nc); moved = true;
+    }
+  }
+  return moved;
+}
+
+function setIdle(v) {
+  idle = v;
+  idleEl.textContent = idle + ' / ' + idleLimit;
+  idleEl.parentElement.style.color = idle >= idleLimit - 3 ? '#e74c3c' : '';
+}
+
+function setScore(v) {
+  score = v; scoreEl.textContent = v;
+  if (v > best) { best = v; localStorage.setItem('cubes-best', best); }
+  bestEl.textContent = best;
+}
+
+function burn() {
+  const dead = findMatches();
+  if (!dead.size) return false;
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++)
+    if (dead.has(grid[r][c])) { grid[r][c].el.classList.add('burn'); const el = grid[r][c].el; setTimeout(() => el.remove(), 220); grid[r][c] = null; }
+  // очки растут быстрее размера группы: 3→30, 4→80, 5→150, 6→240...
+  setScore(score + dead.groups.reduce((sum, n) => sum + 10 * n * (n - 2), 0));
+  return true;
+}
+
+// ход возможен, если рядом с каким-нибудь кубиком есть пустая клетка
+function hasMoves() {
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (!grid[r][c]) continue;
+    for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nr = r + dr, nc = c + dc;
+      if (nr >= 0 && nr < N && nc >= 0 && nc < N && !grid[nr][nc]) return true;
+    }
+  }
+  return false;
+}
+
+function gameOver(reason) {
+  const cubes = N * N - emptyCells().length;
+  document.getElementById('overMsg').textContent = reason || (cubes ? 'Ходов больше нет' : 'Поле очищено!');
+  document.getElementById('finalScore').textContent = score;
+  document.getElementById('newBest').style.display = score > 0 && score >= best && score > startBest ? 'block' : 'none';
+  overEl.style.display = 'flex';
+}
+
+function move(dr, dc) {
+  if (busy) return;
+  if (!slide(dr, dc)) return;
+  busy = true;
+  setTimeout(() => {
+    let burned = burn();
+    setTimeout(() => {
+      spawn(spawnCount, true);
+      burned = burn() || burned;   // страховка: если пришлось поставить кубик в тройку
+      setIdle(burned ? 0 : idle + 1);
+      // при game over busy остаётся true: ходить больше нельзя
+      if (idle >= idleLimit) { gameOver('Слишком много ходов без сжигания'); return; }
+      if (!hasMoves()) { gameOver(); return; }
+      busy = false;
+    }, 250);
+  }, 140);
+}
+
+function start() {
+  boardEl.querySelectorAll('.cube').forEach(e => e.remove());
+  grid = Array.from({ length: N }, () => Array(N).fill(null));
+  overEl.style.display = 'none';
+  busy = false;
+  startBest = best;
+  setScore(0);
+  setIdle(0);
+  spawn(startFill(), false);
+  burn(); setScore(0);   // при малом числе цветов в стартовой раскладке могут остаться тройки
+}
+
+addEventListener('keydown', e => {
+  const d = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key];
+  if (d) { e.preventDefault(); move(...d); }
+});
+
+let t0;
+addEventListener('touchstart', e => { t0 = e.touches[0]; }, { passive: true });
+addEventListener('touchend', e => {
+  if (!t0) return;
+  const t = e.changedTouches[0], dx = t.clientX - t0.clientX, dy = t.clientY - t0.clientY;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < 24) return;
+  if (Math.abs(dx) > Math.abs(dy)) move(0, Math.sign(dx)); else move(Math.sign(dy), 0);
+});
+
+const colorsEl = document.getElementById('colors'), spawnEl = document.getElementById('spawn');
+const sizeEl = document.getElementById('size'), setupEl = document.getElementById('setup');
+colorsEl.value = colorCount; spawnEl.value = spawnCount; sizeEl.value = N;
+const idleLimitEl = document.getElementById('idleLimit'); idleLimitEl.value = idleLimit;
+const clamp = (el, lo, hi) => Math.min(hi, Math.max(lo, Math.round(+el.value) || lo));
+// цвета и размер поля выбираются перед партией и не меняются, пока она идёт
+function play() {
+  colorCount = clamp(colorsEl, 3, PALETTE.length); spawnCount = clamp(spawnEl, 0, 8); N = clamp(sizeEl, 4, 12); idleLimit = clamp(idleLimitEl, 5, 200);
+  colorsEl.value = colorCount; spawnEl.value = spawnCount; sizeEl.value = N; idleLimitEl.value = idleLimit;
+  try { localStorage.setItem('cubes-colors', colorCount); localStorage.setItem('cubes-spawn', spawnCount); localStorage.setItem('cubes-size', N); localStorage.setItem('cubes-idle', idleLimit); } catch (e) {}
+  setupEl.style.display = 'none';
+  makeSlots();
+  start();
+}
+const showSetup = () => { busy = true; setupEl.style.display = 'flex'; };
+document.getElementById('play').onclick = play;
+document.getElementById('restart').onclick = showSetup;
+document.getElementById('again').onclick = () => { setupEl.style.display = 'none'; start(); };
+document.getElementById('toSetup').onclick = showSetup;
+addEventListener('resize', () => { for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (grid[r][c]) place(grid[r][c].el, r, c); });
+
+bestEl.textContent = best;
+makeSlots();
+start();   // фон за стартовым экраном
+showSetup();
+</script>
+</body>
+</html>
