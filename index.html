@@ -22,7 +22,26 @@
   .cube { position: absolute; width: var(--cell); height: var(--cell); border-radius: 8px; box-sizing: border-box;
           transition: left .12s, top .12s, transform .2s, opacity .2s;
           box-shadow: inset 0 -5px 0 rgba(0,0,0,.25), inset 0 3px 0 rgba(255,255,255,.3); }
-  .cube.burn { transform: scale(0); opacity: 0; }
+  /* сгорание: белая вспышка, небольшое раздувание, затем схлопывание с поворотом */
+  .cube.burn { animation: burn .45s ease-in forwards; z-index: 2; }
+  @keyframes burn {
+    0%   { transform: scale(1); filter: brightness(1); opacity: 1; }
+    30%  { transform: scale(1.25); filter: brightness(2.4) saturate(.6); opacity: 1; }
+    100% { transform: scale(0) rotate(100deg); filter: brightness(2.4); opacity: 0; }
+  }
+  .spark { position: absolute; border-radius: 50%; pointer-events: none; z-index: 3;
+           animation: spark .5s ease-out forwards; }
+  @keyframes spark {
+    from { transform: translate(0, 0) scale(1); opacity: 1; }
+    to   { transform: translate(var(--dx), var(--dy)) scale(0); opacity: 0; }
+  }
+  .pop { position: absolute; z-index: 4; pointer-events: none; font-weight: 700; font-size: 22px; color: #fff;
+         text-shadow: 0 2px 6px rgba(0,0,0,.6); transform: translate(-50%, -50%);
+         animation: pop .9s ease-out forwards; }
+  @keyframes pop {
+    from { transform: translate(-50%, -50%) scale(.6); opacity: 1; }
+    to   { transform: translate(-50%, -190%) scale(1.3); opacity: 0; }
+  }
   .cube.new { transform: scale(0); }
   #over { position: absolute; inset: 0; z-index: 5; display: none; flex-direction: column; align-items: center; justify-content: center;
           gap: 12px; background: rgba(20,20,30,.85); border-radius: 10px; font-size: 28px; }
@@ -190,14 +209,46 @@ function setScore(v) {
   bestEl.textContent = best;
 }
 
-function burn() {
+function burn(silent = false) {
   const dead = findMatches();
   if (!dead.size) return false;
   for (let r = 0; r < N; r++) for (let c = 0; c < N; c++)
-    if (dead.has(grid[r][c])) { grid[r][c].el.classList.add('burn'); const el = grid[r][c].el; setTimeout(() => el.remove(), 220); grid[r][c] = null; }
+    if (dead.has(grid[r][c])) {
+      const cube = grid[r][c], el = cube.el;
+      el.classList.add('burn');
+      sparks(el, PALETTE[cube.color]);
+      setTimeout(() => el.remove(), 450);
+      grid[r][c] = null;
+    }
   // очки растут быстрее размера группы: 3→30, 4→80, 5→150, 6→240...
-  setScore(score + dead.groups.reduce((sum, n) => sum + 10 * n * (n - 2), 0));
+  const points = dead.groups.reduce((sum, n) => sum + 10 * n * (n - 2), 0);
+  setScore(score + points);
+  if (!silent) popup(dead, points);
   return true;
+}
+
+// искры разлетаются от центра сгоревшего кубика
+function sparks(cubeEl, color) {
+  const size = cubeEl.offsetWidth, cx = parseFloat(cubeEl.style.left) + size / 2, cy = parseFloat(cubeEl.style.top) + size / 2;
+  for (let i = 0; i < 7; i++) {
+    const p = document.createElement('div'), d = size * (.6 + Math.random() * .6), a = Math.random() * 6.283, s = size * .2;
+    p.className = 'spark';
+    p.style.cssText = `left:${cx - s / 2}px;top:${cy - s / 2}px;width:${s}px;height:${s}px;background:${color};` +
+                      `--dx:${Math.cos(a) * d}px;--dy:${Math.sin(a) * d}px`;
+    boardEl.appendChild(p);
+    setTimeout(() => p.remove(), 500);
+  }
+}
+
+// «+очки» всплывает над центром сгоревших кубиков
+function popup(dead, points) {
+  let x = 0, y = 0;
+  for (const cube of dead) { x += parseFloat(cube.el.style.left) + cube.el.offsetWidth / 2; y += parseFloat(cube.el.style.top) + cube.el.offsetHeight / 2; }
+  const p = document.createElement('div');
+  p.className = 'pop'; p.textContent = '+' + points;
+  p.style.left = x / dead.size + 'px'; p.style.top = y / dead.size + 'px';
+  boardEl.appendChild(p);
+  setTimeout(() => p.remove(), 900);
 }
 
 // ход возможен, если рядом с каким-нибудь кубиком есть пустая клетка
@@ -247,7 +298,7 @@ function start() {
   setScore(0);
   setIdle(0);
   spawn(startFill(), false);
-  burn(); setScore(0);   // при малом числе цветов в стартовой раскладке могут остаться тройки
+  burn(true); setScore(0);   // при малом числе цветов в стартовой раскладке могут остаться тройки
 }
 
 addEventListener('keydown', e => {
